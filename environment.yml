@@ -1,0 +1,10 @@
+name: computo-gbm-seed-variance
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - jupyter
+  - matplotlib
+  - numpy
+  - pandas
+  - scikit-learn

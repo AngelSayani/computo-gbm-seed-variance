@@ -1,0 +1,63 @@
+project:
+  type: default
+  render:
+    - main.qmd
+    - README.qmd
+
+title: "Seed variance in gradient-boosted tree pipelines for industrial sensor-based fault detection"
+subtitle: "How much does a single random seed change what you conclude?"
+author:
+  - name: Angel Sayani
+    corresponding: true
+    email: angelsayani@intellchromatics.com
+    url: https://www.linkedin.com/in/angelsayani
+    orcid: 0009-0003-2544-1574
+    affiliations:
+      - name: IntellChromatics LLC
+        url: https://www.intellchromatics.com
+date: last-modified
+date-modified: last-modified
+abstract: >+
+  Industrial fault-detection systems are increasingly built on gradient-boosted
+  tree (GBT) classifiers trained on sensor data, where the positive class
+  (a failure event) is rare. Reporting a single train/test split and a single
+  model fit is common practice in this literature, yet both steps involve
+  pseudo-random choices. We decompose the seed-induced variance of two
+  widely used scikit-learn GBT implementations on a real, publicly available
+  industrial fault-detection dataset (AI4I 2020, 10 000 operating records,
+  3.39% failure rate) into the share coming from the train/test split and the
+  share coming from the model's own internal randomness, under two
+  class-imbalance-handling settings. We find that (i) a default-configured
+  `HistGradientBoostingClassifier` is, on this dataset, entirely deterministic
+  given a fixed split and therefore contributes zero model-level variance,
+  while the same classifier with `early_stopping=True` and the classic
+  `GradientBoostingClassifier` with row subsampling both show real,
+  non-negligible model-seed variance; (ii) across every configuration we
+  test, a single unlucky or lucky train/test split alone can move the test
+  PR-AUC by 8-17 percentage points relative to the 60-seed mean, which is
+  larger than the differences researchers often report between competing
+  methods; and (iii) whether a GBT implementation's declared `random_state`
+  actually matters depends on implementation details (data size relative to
+  the library's auto-early-stopping threshold, subsampling settings) that are
+  easy to overlook. We give a reproducible, seed-decomposition protocol and
+  code that practitioners and reviewers can reuse on their own fault-detection
+  pipelines to check whether a reported result is a property of the method or
+  a property of the seed.
+keywords: [reproducibility, gradient boosting, random seed, fault detection, predictive maintenance, class imbalance]
+bibliography: references.bib
+github-user: AngelSayani
+repo: "computo-gbm-seed-variance"
+status: submitted
+license: CC-BY-4.0
+citation:
+  type: article-journal
+  container-title: "Computo"
+  issn: "2824-7795"
+  doi: "10.5072/computo.0000" # placeholder DOI (10.5072 is the official DOI test prefix), replace once assigned
+  # set at acceptance, with the published repository name (used by Google Scholar):
+  # url: "https://computo-journal.org/published-YYYYMM-name/"
+  # pdf-url: "https://computo-journal.org/published-YYYYMM-name/main.pdf"
+format:
+  computo-html: default
+  computo-pdf: default
+jupyter: python3

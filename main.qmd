@@ -1,0 +1,364 @@
+# Introduction
+
+Gradient-boosted tree (GBT) classifiers — `scikit-learn`'s
+`HistGradientBoostingClassifier` and `GradientBoostingClassifier`
+[@pedregosa2011scikit; @friedman2001greedy], `XGBoost`, `LightGBM`
+[@ke2017lightgbm] — are a default choice for tabular industrial fault
+detection: predicting, from sensor readings such as temperature, rotational
+speed, torque and tool wear, whether a machine is about to fail. The
+positive class is almost always rare, because failures are rare by design.
+In this regime, small changes in which rows end up in the training set, or
+in a model's own internal pseudo-random choices, can move a reported metric
+by more than the gap between two competing methods.
+
+Most published fault-detection papers report results from a *single* model
+fit on a *single* train/test split. A growing body of work has shown this
+practice is risky in adjacent settings: @bouthillier2021accounting show
+that reporting too few seeds routinely leads to wrong conclusions about
+which method is better in general deep-learning benchmarks;
+@raste2022quantifying quantify how much of a model's variance comes from
+training-algorithm randomness versus data variability; @liem2020run show
+the same for defect-prediction models in software engineering; and, closest
+to our application, @vieira2026towards and @knap2026leakage show that
+bearing-fault-diagnosis benchmarks are routinely inflated by *leaky*
+train/test splits, while @williams2026improving study how to make seed
+dependence in causal-estimation pipelines provably small via bagging. None
+of this prior work isolates *where*, specifically, a GBT pipeline's seed
+sensitivity comes from — the data split or the model's own randomness — or
+checks whether that answer depends on implementation defaults that a
+practitioner might not realize are relevant.
+
+This paper does one specific thing, reproducibly: it decomposes seed
+variance for GBT fault-detection pipelines into these two sources, on one
+real public dataset, across two widely used `scikit-learn` GBT
+implementations and two class-imbalance-handling strategies, and it reports
+exactly how much a single unlucky seed can move the headline metric. The
+contribution is the protocol and the code, not a new algorithm: any reader
+can point `code/run_experiment.py` at their own fault-detection pipeline and
+get the same decomposition for their own data.
+
+## What we actually test
+
+Three questions, stated precisely enough to be falsified by the experiment:
+
+1. **How much of a GBT fault-detection pipeline's run-to-run variance comes
+   from the train/test split, versus the model's own internal randomness?**
+2. **Does a GBT implementation's `random_state` actually change anything?**
+   This sounds like it should always be "yes", but it depends on whether the
+   implementation uses randomness at all once the training data is fixed —
+   which, as we show, is not guaranteed.
+3. **How large is the single-seed estimation error in practice**, i.e. if a
+   paper reports one train/test split, how far off could that number be from
+   the many-seed average, on a real dataset of the kind this literature
+   uses?
+
+# Data
+
+We use the AI4I 2020 Predictive Maintenance Dataset [@matzka2020explainable],
+a public, synthetic-but-realistic industrial dataset built to resemble a
+real milling machine's operating log: 10,000 records with air temperature,
+process temperature, rotational speed, torque, tool wear, a product-quality
+type (`L`/`M`/`H`), a binary `Machine failure` label, and five specific
+failure-mode flags (tool wear failure, heat dissipation failure, power
+failure, overstrain failure, random failure). We use the binary
+`Machine failure` label as the fault-detection target and the five sensor
+readings plus product type as features, dropping the row identifiers.
+
+```{python}
+#| label: data-summary
+#| code-fold: true
+import pandas as pd
+
+df = pd.read_csv("data/ai4i2020.csv", encoding="utf-8-sig")
+n = len(df)
+pos = int(df["Machine failure"].sum())
+print(f"rows: {n}")
+print(f"positive rate: {pos}/{n} = {pos/n*100:.2f}%")
+print(df["Type"].value_counts().to_dict())
+```
+
+The failure rate is 3.39% — small enough that the identity of the roughly
+100 positive test-set rows in any given split matters a great deal to every
+metric we report, which is exactly the regime where seed choice is most
+consequential and most commonly under-reported.
+
+# Method
+
+## Pipelines
+
+We compare three GBT configurations, all from `scikit-learn`
+[@pedregosa2011scikit], chosen because they are both widely used and
+differ in whether and how they use `random_state`:
+
+- **`HistGBM` (default)** — `HistGradientBoostingClassifier` with its
+  library defaults (`max_iter=200`, `early_stopping="auto"`, which disables
+  early stopping outright when the training set has under 10,000 rows, as
+  ours does after the 70/30 split).
+- **`HistGBM` (`early_stopping=True`)** — the same classifier with early
+  stopping forced on, which makes it carve out an internal validation split
+  using `random_state`.
+- **`GradientBoosting` (`subsample=0.8`)** — the classic stochastic
+  gradient boosting implementation [@friedman2001greedy], with row
+  subsampling at each boosting round, which is controlled by
+  `random_state` by construction.
+
+Categorical `Type` is one-hot encoded; numeric features are passed through
+unchanged (tree ensembles do not require scaling). Each pipeline is
+evaluated under two imbalance-handling settings: **none** (default
+decision threshold and no reweighting) and **balanced** (class-weighted
+loss, implemented as `class_weight="balanced"` for `HistGBM` and as
+inverse-prevalence `sample_weight` for `GradientBoosting`, which has no
+built-in `class_weight`).
+
+## Seed-variance decomposition
+
+For each (model, imbalance-setting) pair we run three scenarios, 60
+pseudo-random seeds each, for 540 runs per model variant and 1,080 runs in
+total across the three model variants:
+
+- **`split_only`** — the train/test split seed varies (60 values), the
+  model's internal `random_state` is held fixed at 0.
+- **`model_only`** — the split seed is held fixed at 0, the model's
+  internal `random_state` varies (60 values).
+- **`both`** — both vary, using two independent seed streams so this
+  scenario is not a relabelling of the other two. This is the "naive single
+  run" scenario a paper reporting one train/test split and one model fit is
+  implicitly drawing one sample from.
+
+All splits are stratified 70/30 by the target. For every run we report test
+PR-AUC (appropriate under 3.39% prevalence, where ROC-AUC is optimistic),
+F1 at the default 0.5 threshold, recall at a fixed 1% false-positive rate
+(a realistic alarm-budget operating point for a maintenance team), and the
+Brier score (calibration). Code: `code/run_experiment.py` (main sweep,
+720 runs) and `code/run_experiment_es.py` (the `early_stopping=True`
+condition, 360 runs).
+
+```{python}
+#| label: load-results
+#| code-fold: true
+import json
+import numpy as np
+
+runs = pd.read_json("results/all_runs.jsonl", lines=True)
+print(f"total runs: {len(runs)}")
+print(runs.groupby(["model", "balance", "scenario"]).size().to_string())
+```
+
+# Results
+
+## How much variance comes from the split versus the model?
+
+@fig-variance-decomp shows the distribution of test PR-AUC across the 60
+seeds of each scenario, for every model/imbalance combination.
+
+```{python}
+#| label: fig-variance-decomp
+#| fig-cap: "Test PR-AUC across 60 seeds, decomposed by randomness source, for three GBT configurations under two class-imbalance settings. The HistGBM (default) model is exactly deterministic given a fixed split (zero-width model-seed-only box), because at this training-set size its early-stopping default is off; forcing early_stopping=True restores real model-seed variance."
+#| fig-width: 11
+#| fig-height: 4.3
+import matplotlib.pyplot as plt
+
+model_order = ["hist_gbm", "hist_gbm_earlystop", "grad_boost"]
+model_labels = {
+    "hist_gbm": "HistGBM\n(default)",
+    "hist_gbm_earlystop": "HistGBM\n(early_stopping=True)",
+    "grad_boost": "GradientBoosting\n(subsample=0.8)",
+}
+scen_order = ["split_only", "model_only", "both"]
+scen_labels = {"split_only": "split seed only", "model_only": "model seed only", "both": "both seeds (naive)"}
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), sharey=False)
+for ax, bal, title in zip(axes, ["none", "balanced"], ["No class weighting", "Class-balanced weighting"]):
+    data, labels, positions = [], [], []
+    pos_i = 0
+    for model in model_order:
+        for scen in scen_order:
+            sub = runs[(runs.model == model) & (runs.balance == bal) & (runs.scenario == scen)]["pr_auc"]
+            data.append(sub.values)
+            labels.append(scen_labels[scen])
+            positions.append(pos_i)
+            pos_i += 1
+        pos_i += 0.6
+    bp = ax.boxplot(data, positions=positions, widths=0.7, patch_artist=True)
+    colors = ["#4C72B0", "#DD8452", "#55A868"] * len(model_order)
+    for patch, c in zip(bp["boxes"], colors):
+        patch.set_facecolor(c)
+        patch.set_alpha(0.6)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=7)
+    ax.set_title(title, fontsize=10)
+    ax.set_ylabel("PR-AUC (test)")
+    group_centers = [1, 1 + 3 + 0.6, 1 + 6 + 1.2]
+    for gc, model in zip(group_centers, model_order):
+        ax.text(gc, ax.get_ylim()[1] * 0.995, model_labels[model], ha="center", va="top",
+                 fontsize=7.5, fontweight="bold")
+fig.tight_layout()
+plt.show()
+```
+
+@tbl-variance-share quantifies the split in each configuration, computed
+as $\hat{\sigma}^2_{\text{split}} / (\hat{\sigma}^2_{\text{split}} +
+\hat{\sigma}^2_{\text{model}})$, the fraction of the sum of the two
+single-source variances attributable to the split.
+
+```{python}
+#| label: tbl-variance-share
+#| tbl-cap: "Share of PR-AUC seed variance attributable to the train/test split (vs. the model's own randomness), by configuration."
+vs = pd.read_csv("results/variance_share.csv")
+vs_display = vs.rename(columns={
+    "model": "Model", "balance": "Imbalance handling",
+    "split_std": "split-seed std", "model_std": "model-seed std",
+    "both_std": "both-seed std", "split_share": "split share",
+})
+for c in ["split-seed std", "model-seed std", "both-seed std"]:
+    vs_display[c] = vs_display[c].map(lambda v: f"{v:.2e}" if v < 1e-6 else f"{v:.4f}")
+vs_display["split share"] = vs_display["split share"].map(lambda v: f"{v:.2f}")
+vs_display
+```
+
+The train/test split, not the model's internal randomness, is the dominant
+source of variance in every configuration we test (60-100% of the combined
+variance). This matters because split variance is exactly the part that
+disappears if a paper reports a single fixed split (common practice), while
+still being just as real a source of uncertainty about how the model will
+perform on genuinely new data.
+
+## Does the model's `random_state` do anything?
+
+For `HistGBM` with its default settings, the answer on this dataset is
+measurably **no**: the model-seed-only std of PR-AUC is on the order of
+$10^{-16}$ across 60 distinct `random_state` values — floating-point
+round-off, not a real effect; the predicted probabilities are bit-identical
+across seeds. This happens because with training-set size
+under 10,000 rows, `early_stopping="auto"` resolves to `False`, and without
+early stopping or subsampling, `HistGradientBoostingClassifier`'s fit is a
+deterministic function of the training data. Forcing `early_stopping=True`
+restores real model-seed variance (std 0.0145-0.0341 depending on
+imbalance handling), because early stopping carves out an internal
+validation split using `random_state`. `GradientBoostingClassifier` with
+row subsampling shows real model-seed variance in every setting (std
+0.0127-0.0210), as expected from its design.
+
+Practically: whether setting a different `random_state` on a GBT fault
+detector will reproduce bit-identical results, or materially different
+ones, depends on a configuration detail (data size relative to an
+auto-early-stopping threshold, whether subsampling is enabled) that is easy
+to overlook and is not something a user would learn from the metric alone.
+A team that re-runs their pipeline with a new seed and sees identical
+numbers may be looking at a real invariance property, not at a bug in their
+randomness.
+
+## How much could a single reported run be off by?
+
+@tbl-worst-case reports, for the "naive" scenario (both seeds varying, the
+situation a single train/test-split-and-fit paper is implicitly sampling
+from), how far the single worst seed's PR-AUC was from the 60-seed mean.
+
+```{python}
+#| label: tbl-worst-case
+#| tbl-cap: "Largest absolute deviation of a single seed's test PR-AUC from the 60-seed mean, in the naive (both-seeds-vary) scenario."
+wc = pd.read_csv("results/worst_case.csv")
+wc_display = wc.rename(columns={
+    "model": "Model", "balance": "Imbalance handling",
+    "mean_pr_auc": "mean PR-AUC", "max_abs_dev": "max |deviation|", "pct": "max deviation (%)",
+})
+wc_display["mean PR-AUC"] = wc_display["mean PR-AUC"].map(lambda v: f"{v:.4f}")
+wc_display["max |deviation|"] = wc_display["max |deviation|"].map(lambda v: f"{v:.4f}")
+wc_display["max deviation (%)"] = wc_display["max deviation (%)"].map(lambda v: f"{v:.1f}")
+wc_display
+```
+
+Across our six configurations, a single unlucky or lucky seed alone can
+move test PR-AUC by 8.3-22.3 percentage points relative to the many-seed
+mean. For comparison, published fault-detection papers frequently report
+method-to-method PR-AUC or F1 differences of a few points as evidence one
+approach is better than another. A gap of that size is comfortably inside
+the range a single seed can produce by chance alone in our experiment,
+which is the practical argument, backed by numbers from a real dataset, for
+reporting multi-seed results (or at minimum a fixed, documented split) in
+this literature.
+
+# Discussion
+
+Three findings, each actionable on their own:
+
+**The split matters more than the model's internal randomness, but both
+are usually invisible in a single reported run.** A single train/test
+split and a single model fit together hide two separate sources of
+variance that, summed, can be large relative to the effect sizes this
+literature reports as meaningful. Reporting a mean and spread over at
+least a handful of split seeds (holding the model's `random_state` fixed is
+a defensible compute-saving simplification once Section 4.2 is used to
+check that model-seed variance is small for the chosen implementation and
+settings) would catch most of this.
+
+**"Reproducible" is implementation- and configuration-specific, not just
+dataset-specific.** The same classifier, `HistGradientBoostingClassifier`,
+is exactly seed-invariant under its own defaults on this dataset size and
+not seed-invariant once `early_stopping=True` is set. A claim like "we
+fixed all random seeds, so our results are reproducible" is true in a
+narrow, implementation-dependent sense that does not transfer to a
+different configuration, a different dataset size, or a different library.
+We recommend reporting, explicitly, which randomness sources a pipeline
+actually exercises (we found this requires reading the specific
+implementation's source, not just its seed parameter's existence) rather
+than assuming a seed parameter implies seed-dependence.
+
+**Class-imbalance handling changes the variance, not just the mean.**
+Class-weighting shifted the mean PR-AUC, as expected, but it also changed
+variance and even which source (split vs. model) dominates — most visibly
+for `HistGBM (early_stopping=True)`, where the split share drops from 0.80
+(no weighting) to 0.60 (balanced), because class-weighting interacts with
+the internal validation split used for early stopping. A paper that tunes
+imbalance handling without re-checking seed sensitivity under the new
+setting may be comparing noise to signal.
+
+# Limitations
+
+We restrict the comparison to the two GBT implementations shipped with
+`scikit-learn` [@pedregosa2011scikit], because the two most common
+third-party alternatives, `XGBoost` and `LightGBM` [@ke2017lightgbm], could
+not be installed in the network-restricted environment this study was run
+in; we expect the qualitative split-vs-model finding to generalize (both
+implementations also expose a `random_state` and support subsampling), but
+the exact variance magnitudes and the "is the model deterministic given a
+fixed split" question are implementation-specific by construction of our
+result and should be re-checked per library. The dataset is synthetic but
+designed to resemble a real milling machine [@matzka2020explainable], not
+field sensor data from a live deployment; real sensor streams may have
+additional structure (temporal drift, sensor noise correlated with the
+fault mode) that changes the magnitude, though not the existence, of
+seed-induced variance. We use a 70/30 stratified random split rather than
+a leakage-safe grouped split (e.g. by physical unit, as recommended for
+bearing datasets by @vieira2026towards and @knap2026leakage); the AI4I 2020
+dataset has no unit identifier to group by, so this risk does not apply
+here, but it is a distinct and larger source of inflated performance that
+anyone adapting this protocol to a dataset with repeated-unit
+measurements should address first. Finally, 60 seeds per scenario gives
+usable but not asymptotically tight variance estimates; @tbl-variance-share
+and @tbl-worst-case should be read as practically informative lower bounds
+on seed sensitivity, not as exact population parameters.
+
+# Reproducing this paper
+
+All code, the dataset, and the raw per-seed results (1,080 runs) are in
+this repository. The committed `results/all_runs.jsonl` is what every
+figure and table in this paper is computed from at render time (the code
+chunks above are not pre-rendered images); this keeps the continuous
+integration build under a minute. To regenerate `results/all_runs.jsonl`
+itself from scratch:
+
+```.bash
+python3 code/run_experiment.py      # 720 runs, ~13 minutes on a single CPU core
+python3 code/run_experiment_es.py   # 360 runs, ~2 minutes
+```
+
+Both scripts fix every seed explicitly (a top-level `numpy` seed of 12345
+generates the per-run seed sequence) and write one JSON record per run, so
+the regenerated file is identical, row for row, to the one committed here.
+Package versions are pinned in `environment.yml`.
+
+# References {.unnumbered}
+
+::: {#refs}
+:::

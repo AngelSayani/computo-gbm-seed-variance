@@ -1,0 +1,76 @@
+# >>> computorg base (managed by tools-automation/sync-gitignore.py, do not edit) >>>
+# Common base for Computo article and template repositories.
+# Synced into each repository's .gitignore between the "computorg base" markers;
+# add repository-specific entries below the closing marker.
+
+# Quarto
+.quarto/
+/_site/
+/_freeze/
+**/*.quarto_ipynb
+.luarc.json
+
+# Computo extension: installed on the fly by CI, never versioned
+/_extensions/
+/logo_text_white.pdf
+/logo_notext_white.png
+
+# Rendered outputs of the source documents (main.qmd, README.qmd, template-computo-*.qmd)
+/main.html
+/main.pdf
+/main.tex
+/main.ipynb
+/main_files/
+/main_cache/
+/README.html
+/README_files/
+/template-computo-*.html
+/template-computo-*.pdf
+/template-computo-*.tex
+/template-computo-*.ipynb
+/template-computo-*_files/
+/template-computo-*_cache/
+# legacy source documents named after the repository
+/published-*.html
+/published-*.pdf
+/published-*.tex
+/published-*.ipynb
+/published-*_files/
+/published-*_cache/
+*.aux
+*.log
+*.toc
+
+# R
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+*.Rcheck/
+_environment
+# renv: .Rprofile, renv.lock and renv/{activate.R,settings.json,.gitignore} ARE versioned;
+# the package library and renv working directories are not (also excluded by renv/.gitignore)
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/sandbox/
+renv/staging/
+
+# Python
+__pycache__/
+.pytest_cache/
+.micromamba/
+.joblib
+.venv/
+
+# Misc
+cache/
+.DS_Store
+.claude/
+# <<< computorg base <<<
+
+/.quarto/
