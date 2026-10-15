@@ -26,7 +26,45 @@ dependence in causal-estimation pipelines provably small via bagging. None
 of this prior work isolates *where*, specifically, a GBT pipeline's seed
 sensitivity comes from — the data split or the model's own randomness — or
 checks whether that answer depends on implementation defaults that a
-practitioner might not realize are relevant.
+practitioner might not realize are relevant. @tbl-related-work places this
+paper against that prior work directly, on the four dimensions that matter
+for our questions: whether the study decomposes seed variance by *source*
+(split vs. model) rather than reporting a single combined spread, whether it
+studies gradient-boosted trees specifically, whether it uses real
+fault-detection data, and whether it checks whether an implementation's
+randomness parameter actually does anything under the settings it ships
+with by default.
+
+```{python}
+#| label: tbl-related-work
+#| tbl-cap: "How this paper's four questions relate to the closest prior work. A check mark means that work addresses the dimension directly; a dash means it does not."
+import pandas as pd
+
+rw = pd.DataFrame([
+    {"Work": "Bouthillier et al. 2021", "Decomposes split vs. model seed": "no",
+     "GBT-specific": "no", "Real fault-detection data": "no",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "Raste et al. 2022", "Decomposes split vs. model seed": "partial (algorithm vs. data)",
+     "GBT-specific": "no", "Real fault-detection data": "no",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "Liem & Panichella 2020", "Decomposes split vs. model seed": "no",
+     "GBT-specific": "no", "Real fault-detection data": "no (defect prediction)",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "Vieira et al. 2026", "Decomposes split vs. model seed": "no (splits only)",
+     "GBT-specific": "no (deep + shallow)", "Real fault-detection data": "yes (bearings)",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "Knap et al. 2026", "Decomposes split vs. model seed": "no (splits only)",
+     "GBT-specific": "no", "Real fault-detection data": "yes (bearings)",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "Williams & Schuler 2026", "Decomposes split vs. model seed": "yes (theory only)",
+     "GBT-specific": "no", "Real fault-detection data": "no (simulated)",
+     "Checks if random_state is a no-op": "no"},
+    {"Work": "This paper", "Decomposes split vs. model seed": "yes (empirical)",
+     "GBT-specific": "yes", "Real fault-detection data": "yes (AI4I 2020)",
+     "Checks if random_state is a no-op": "yes"},
+])
+rw.set_index("Work")
+```
 
 This paper does one specific thing, reproducibly: it decomposes seed
 variance for GBT fault-detection pipelines into these two sources, on one
@@ -359,6 +397,53 @@ the internal validation split used for early stopping. A paper that tunes
 imbalance handling without re-checking seed sensitivity under the new
 setting may be comparing noise to signal.
 
+# Practical recommendations
+
+Translating the three findings above into concrete steps for someone
+building or reviewing a GBT fault-detection pipeline:
+
+**Before reporting a number, run the split-seed check, not the model-seed
+check.** Section 4.1 shows the train/test split accounts for 60-100% of
+total seed variance in every configuration we test. If you only have
+compute budget for one robustness check, re-run your pipeline on 5-10
+different stratified splits (same model `random_state`) and report the
+mean and range. This catches the dominant source of variance for a
+fraction of the cost of a full seed sweep.
+
+**Check whether your specific GBT implementation's `random_state` does
+anything before relying on it for reproducibility claims.** Train the same
+model twice with two different `random_state` values on your actual
+training set, and diff the predictions. If they are bit-identical, your
+"reproducibility" is a property of that configuration, not evidence of a
+stable model — document which setting makes it so (dataset size relative
+to an early-stopping threshold, subsampling on or off), since that
+property can silently flip in a future retraining run on more data. If the
+model is `HistGradientBoostingClassifier`-like and your training set is
+near a size where auto-early-stopping toggles, re-run this check after any
+meaningful change in data volume.
+
+**Re-run the seed-sensitivity check after any change to class-imbalance
+handling, not just after a change to the model.** Section 5 (Discussion)
+shows class-weighting shifted both the mean metric and which randomness
+source dominates. A before/after comparison of imbalance-handling
+strategies that holds seeds fixed on one side and varies them on the other
+is comparing noise to signal.
+
+**Size your claimed improvement against @tbl-worst-case, not against your
+intuition for what counts as "a real difference."** An 8-17 point PR-AUC
+swing from seed choice alone, on a dataset and model family typical of
+this literature, is larger than most reported method-to-method gaps. A
+one-split, one-seed comparison showing method A beats method B by two or
+three PR-AUC points is not distinguishable from seed luck without a
+multi-seed check.
+
+**Report recall at a fixed, operationally meaningful false-positive rate,
+not only threshold-free metrics.** @tbl-full-metrics (Appendix) shows
+recall-at-1%-FPR has a comparable relative spread to PR-AUC across
+configurations; a maintenance team sizing an alarm budget needs the
+metric at their actual operating point, not just an aggregate ranking
+metric.
+
 # Limitations
 
 We restrict the comparison to the two GBT implementations shipped with
@@ -403,6 +488,58 @@ Both scripts fix every seed explicitly (a top-level `numpy` seed of 12345
 generates the per-run seed sequence) and write one JSON record per run, so
 the regenerated file is identical, row for row, to the one committed here.
 Package versions are pinned in `environment.yml`.
+
+# Appendix: full per-configuration metrics {#sec-appendix}
+
+The main text focuses on PR-AUC, since it is the single metric most
+sensitive to the 3.39% positive rate. @tbl-full-metrics reports all four
+metrics (PR-AUC, F1 at the default 0.5 threshold, recall at a fixed 1%
+false-positive rate, and the Brier score for calibration) for every model,
+imbalance setting, and seed-source scenario, as mean $\pm$ one standard
+deviation across the 60 seeds in that cell. This is the complete numeric
+record the figures and summary tables in the main text are drawn from.
+
+```{python}
+#| label: tbl-full-metrics
+#| tbl-cap: "Full per-configuration results: mean ± one standard deviation across 60 seeds, for all four metrics, all three GBT configurations, both imbalance settings, and all three seed-source scenarios."
+metric_cols = ["pr_auc", "f1_at_0.5", "recall_at_1pct_fpr", "brier"]
+metric_display_names = {
+    "pr_auc": "PR-AUC", "f1_at_0.5": "F1@0.5",
+    "recall_at_1pct_fpr": "Recall@1%FPR", "brier": "Brier",
+}
+
+rows = []
+group_order = [
+    ("hist_gbm", "none"), ("hist_gbm", "balanced"),
+    ("hist_gbm_earlystop", "none"), ("hist_gbm_earlystop", "balanced"),
+    ("grad_boost", "none"), ("grad_boost", "balanced"),
+]
+scen_order_full = ["split_only", "model_only", "both"]
+model_display = {"hist_gbm": "HistGBM (default)", "hist_gbm_earlystop": "HistGBM (early_stopping=True)",
+                  "grad_boost": "GradientBoosting (subsample=0.8)"}
+scen_display = {"split_only": "Split only", "model_only": "Model only", "both": "Both (naive)"}
+
+for model, bal in group_order:
+    for scen in scen_order_full:
+        sub = runs[(runs.model == model) & (runs.balance == bal) & (runs.scenario == scen)]
+        row = {"Model": model_display[model], "Imbalance": bal, "Scenario": scen_display[scen]}
+        for m in metric_cols:
+            row[metric_display_names[m]] = f"{sub[m].mean():.3f} ± {sub[m].std():.3f}"
+        rows.append(row)
+
+full_tbl = pd.DataFrame(rows)
+full_tbl
+```
+
+@tbl-full-metrics shows the same split-dominates-model pattern holds for
+recall-at-1%-FPR and F1 (both have visibly wider spread under "both" and
+"split only" than under "model only"), while the Brier score is markedly
+less seed-sensitive in absolute terms across every configuration — its
+standard deviation stays under 0.0041 everywhere, versus a PR-AUC standard
+deviation up to 0.048. This means seed choice mainly threatens
+discrimination metrics (PR-AUC, F1, recall at a fixed operating point)
+rather than the model's raw probability calibration, at least on this
+dataset and feature set.
 
 # References {.unnumbered}
 
