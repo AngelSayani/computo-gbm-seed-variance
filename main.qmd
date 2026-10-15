@@ -153,10 +153,24 @@ seeds of each scenario, for every model/imbalance combination.
 
 ```{python}
 #| label: fig-variance-decomp
-#| fig-cap: "Test PR-AUC across 60 seeds, decomposed by randomness source, for three GBT configurations under two class-imbalance settings. The HistGBM (default) model is exactly deterministic given a fixed split (zero-width model-seed-only box), because at this training-set size its early-stopping default is off; forcing early_stopping=True restores real model-seed variance."
-#| fig-width: 11
-#| fig-height: 4.3
+#| fig-cap: "Test PR-AUC across 60 seeds, decomposed by randomness source, for three GBT configurations under two class-imbalance settings. Diamonds mark the mean, the line inside each box marks the median. The HistGBM (default) model is exactly deterministic given a fixed split (zero-width model-seed-only box), because at this training-set size its early-stopping default is off; forcing early_stopping=True restores real model-seed variance."
+#| fig-width: 12
+#| fig-height: 5.1
 import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Patch
+
+plt.rcParams.update({
+    "font.family": "DejaVu Sans", "font.size": 9.5,
+    "axes.edgecolor": "#52514e", "axes.linewidth": 0.8,
+    "text.color": "#0b0b0b", "axes.labelcolor": "#0b0b0b",
+    "xtick.color": "#52514e", "ytick.color": "#52514e",
+})
+
+# validated 3-slot categorical palette (CVD- and normal-vision-safe, all-pairs)
+COL_SPLIT, COL_MODEL, COL_BOTH = "#2a78d6", "#eb6834", "#1baf7a"
+PALETTE = [COL_SPLIT, COL_MODEL, COL_BOTH]
+EDGE = "#2b2b28"
 
 model_order = ["hist_gbm", "hist_gbm_earlystop", "grad_boost"]
 model_labels = {
@@ -165,34 +179,66 @@ model_labels = {
     "grad_boost": "GradientBoosting\n(subsample=0.8)",
 }
 scen_order = ["split_only", "model_only", "both"]
-scen_labels = {"split_only": "split seed only", "model_only": "model seed only", "both": "both seeds (naive)"}
+scen_labels = {"split_only": "Split seed only", "model_only": "Model seed only", "both": "Both seeds (naive)"}
 
-fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), sharey=False)
+fig, axes = plt.subplots(1, 2, figsize=(12, 5.1), sharey=False)
 for ax, bal, title in zip(axes, ["none", "balanced"], ["No class weighting", "Class-balanced weighting"]):
-    data, labels, positions = [], [], []
-    pos_i = 0
+    data, positions, box_colors, group_centers = [], [], [], []
+    x = 0.0
     for model in model_order:
+        xs_this_group = []
         for scen in scen_order:
             sub = runs[(runs.model == model) & (runs.balance == bal) & (runs.scenario == scen)]["pr_auc"]
             data.append(sub.values)
-            labels.append(scen_labels[scen])
-            positions.append(pos_i)
-            pos_i += 1
-        pos_i += 0.6
-    bp = ax.boxplot(data, positions=positions, widths=0.7, patch_artist=True)
-    colors = ["#4C72B0", "#DD8452", "#55A868"] * len(model_order)
-    for patch, c in zip(bp["boxes"], colors):
+            positions.append(x)
+            xs_this_group.append(x)
+            box_colors.append(PALETTE[scen_order.index(scen)])
+            x += 1.0
+        group_centers.append((model, sum(xs_this_group) / len(xs_this_group), min(xs_this_group), max(xs_this_group)))
+        x += 1.3
+
+    bp = ax.boxplot(
+        data, positions=positions, widths=0.62, patch_artist=True, showfliers=True,
+        flierprops=dict(marker="o", markersize=3, markerfacecolor="none",
+                         markeredgecolor="#8a8a84", linewidth=0.6, alpha=0.7),
+        medianprops=dict(color=EDGE, linewidth=1.6),
+        whiskerprops=dict(color=EDGE, linewidth=0.9),
+        capprops=dict(color=EDGE, linewidth=0.9),
+        boxprops=dict(linewidth=0.9, edgecolor=EDGE),
+    )
+    for patch, c in zip(bp["boxes"], box_colors):
         patch.set_facecolor(c)
-        patch.set_alpha(0.6)
-    ax.set_xticks(positions)
-    ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=7)
-    ax.set_title(title, fontsize=10)
-    ax.set_ylabel("PR-AUC (test)")
-    group_centers = [1, 1 + 3 + 0.6, 1 + 6 + 1.2]
-    for gc, model in zip(group_centers, model_order):
-        ax.text(gc, ax.get_ylim()[1] * 0.995, model_labels[model], ha="center", va="top",
-                 fontsize=7.5, fontweight="bold")
-fig.tight_layout()
+        patch.set_alpha(0.82)
+
+    means = [np.mean(d) for d in data]
+    ax.scatter(positions, means, marker="D", s=14, color="white", edgecolor=EDGE, linewidth=0.8, zorder=5)
+
+    ax.set_xticks([])
+    ax.set_ylabel("Test PR-AUC", fontsize=9.5)
+    ax.set_title(title, fontsize=11, pad=42, fontweight="bold")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="y", color="#e3e2dc", linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+
+    ymin, ymax = ax.get_ylim()
+    yspan = ymax - ymin
+    for i, (model, center, lo, hi) in enumerate(group_centers):
+        ax.text(center, ymax + yspan * 0.035, model_labels[model], ha="center", va="bottom",
+                 fontsize=8.0, fontweight="bold", linespacing=1.3)
+        if i < len(group_centers) - 1:
+            sep = (hi + group_centers[i + 1][2]) / 2
+            ax.axvline(sep, color="#e3e2dc", linewidth=0.8, zorder=0)
+    ax.set_ylim(ymin, ymax + yspan * 0.19)
+    ax.set_xlim(positions[0] - 0.7, positions[-1] + 0.7)
+
+legend_handles = [Patch(facecolor=PALETTE[i], edgecolor=EDGE, alpha=0.82, label=scen_labels[s])
+                   for i, s in enumerate(scen_order)]
+legend_handles.append(plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="white",
+                                   markeredgecolor=EDGE, markersize=5, label="Mean", linestyle="None"))
+fig.legend(handles=legend_handles, loc="lower center", ncol=4, frameon=False,
+           fontsize=9.5, bbox_to_anchor=(0.5, -0.04))
+fig.tight_layout(rect=[0, 0.06, 1, 1])
 plt.show()
 ```
 
